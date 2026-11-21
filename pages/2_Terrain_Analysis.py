@@ -12,8 +12,10 @@ from plotly.subplots import make_subplots
 
 from core.environment import generate_planetary_terrain, PlanetaryEnvironment
 from core.terrain_analysis import compute_terrain_layers, CLASS_BEDROCK, CLASS_SAND, CLASS_ROCKY, CLASS_BOULDERS, CLASS_IMPASSABLE
+from utils.styles import apply_shared_styles
 
 st.set_page_config(page_title="Terrain Analysis | ASTRA-SCOUT", page_icon="🗺️", layout="wide")
+apply_shared_styles()
 
 st.title("🗺️ AI Planetary Terrain Intelligence")
 st.caption("Morphological & Geotechnical Analysis for Planetary Surface Navigation")

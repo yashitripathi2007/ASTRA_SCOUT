@@ -4,8 +4,10 @@ System architecture, mathematical models, physical formulas, and transition road
 """
 
 import streamlit as st
+from utils.styles import apply_shared_styles
 
 st.set_page_config(page_title="About ASTRA-SCOUT", page_icon="📖", layout="wide")
+apply_shared_styles()
 
 st.title("📖 About ASTRA-SCOUT")
 st.caption("AI-Powered Collaborative Rover–Drone Planetary Exploration Architecture")

@@ -18,8 +18,10 @@ from utils.visualization import (
     create_energy_comparison_figure,
 )
 from utils.metrics import compute_comparative_metrics
+from utils.styles import apply_shared_styles
 
 st.set_page_config(page_title="Mission Control | ASTRA-SCOUT", page_icon="🛸", layout="wide")
+apply_shared_styles()
 
 st.title("🛸 Mission Control Center")
 st.caption("Real-Time Multi-Agent Surface & Aerial Telemetry Console")

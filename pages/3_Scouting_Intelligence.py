@@ -16,8 +16,10 @@ from core.sensor_fusion import SensorFusionGrid, ObservationSource
 from core.scout import DroneScout, FlightPattern
 from core.decision_engine import AdaptiveDecisionEngine
 from utils.visualization import create_multisource_knowledge_map
+from utils.styles import apply_shared_styles
 
 st.set_page_config(page_title="Scouting Intelligence | ASTRA-SCOUT", page_icon="👁️", layout="wide")
+apply_shared_styles()
 
 st.title("👁️ Scouting Intelligence & Sensor Fusion")
 st.caption("Multi-Agent Perceptual Layering & Epistemic Uncertainty Breakdown")

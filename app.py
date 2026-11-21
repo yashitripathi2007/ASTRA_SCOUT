@@ -15,6 +15,7 @@ from core.rover import RoverAgent
 from core.decision_engine import AdaptiveDecisionEngine
 from core.navigation import plan_mission
 from utils.metrics import compute_comparative_metrics
+from utils.styles import apply_shared_styles
 
 st.set_page_config(
     page_title="ASTRA-SCOUT | Collaborative Planetary Exploration",
@@ -22,6 +23,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+apply_shared_styles()
 
 # Initialize Global Session State
 if "initialized" not in st.session_state:
@@ -67,7 +69,7 @@ with col_logo:
         st.image(logo_path, width=120)
 with col_title:
     st.title("ASTRA-SCOUT")
-    st.subheader("AI-Powered Collaborative Rover–Drone Planetary Exploration")
+    st.markdown('<p class="hero-subtitle">AI-Powered Collaborative Rover–Drone Planetary Exploration</p>', unsafe_allow_html=True)
     st.caption("Next-Generation Multi-Agent Aerial-Ground Co-Exploration Architecture")
 
 st.markdown("---")

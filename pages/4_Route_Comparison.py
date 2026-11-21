@@ -18,8 +18,10 @@ from core.decision_engine import AdaptiveDecisionEngine, MissionCostConfig
 from core.navigation import plan_mission, StrategyMode
 from utils.visualization import create_energy_comparison_figure, create_telemetry_history_chart
 from utils.metrics import compute_comparative_metrics
+from utils.styles import apply_shared_styles
 
 st.set_page_config(page_title="Route Comparison | ASTRA-SCOUT", page_icon="📊", layout="wide")
+apply_shared_styles()
 
 st.title("📊 Mission Route & Strategy Comparison")
 st.caption("Quantitative Benchmarking: Rover-Only Baseline vs Always-Scout vs Adaptive-Scout")
