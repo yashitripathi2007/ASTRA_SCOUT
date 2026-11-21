@@ -6,6 +6,7 @@ Main Application Entrypoint & Executive Command Dashboard.
 import os
 import streamlit as st
 import numpy as np
+import pandas as pd
 
 from core.environment import generate_planetary_terrain, PlanetaryEnvironment
 from core.terrain_analysis import compute_terrain_layers
@@ -83,14 +84,16 @@ and a ground exploration rover to conquer hazardous extraterrestrial terrains (M
 Select a module from the **left sidebar** or click through below:
 """)
 
-c1, c2, c3, c4 = st.columns(4)
-with c1:
+row1_col1, row1_col2 = st.columns(2)
+with row1_col1:
     st.info("### 🛸 1. Mission Control\nInteractive 3D planetary map, live mission execution, and telemetry feeds.")
-with c2:
+with row1_col2:
     st.success("### 🗺️ 2. Terrain Analysis\nDigital Elevation Models (DEM), slope gradients, micro-roughness & geological hazards.")
-with c3:
+
+row2_col1, row2_col2 = st.columns(2)
+with row2_col1:
     st.warning("### 👁️ 3. Scouting Intelligence\nMulti-source sensor fusion: provenanced aerial, ground, and AI-inferred observation layers.")
-with c4:
+with row2_col2:
     st.error("### 📊 4. Route Comparison\nComparative energy analysis, replanning reductions, and Monte Carlo multi-seed benchmarking.")
 
 st.markdown("---")

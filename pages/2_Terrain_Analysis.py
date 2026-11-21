@@ -7,6 +7,7 @@ surface roughness, traversability indices, and rock classification.
 import os
 import streamlit as st
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -64,9 +65,14 @@ with tabs[0]:
         colorbar=dict(title="Elevation (m)", len=0.7)
     )])
     fig_dem.update_layout(
-        title=f"3D Topographical Surface: {env.name}",
+        title=dict(
+            text=f"3D Topographical Surface: {env.name}",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
         scene=dict(xaxis_title="X (m)", yaxis_title="Y (m)", zaxis_title="Elevation (m)", aspectmode="data"),
-        margin=dict(l=0, r=0, b=0, t=35)
+        margin=dict(l=0, r=0, b=0, t=65)
     )
     st.plotly_chart(fig_dem, use_container_width=True)
 
@@ -79,7 +85,11 @@ with tabs[1]:
             colorscale="Viridis",
             colorbar=dict(title="Slope (°)", len=0.8)
         ))
-        fig_slope.update_layout(title="Terrain Incline (Degrees)", yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=20, r=20, b=20, t=35))
+        fig_slope.update_layout(
+            title=dict(text="Terrain Incline (Degrees)", y=0.96, x=0.02, xanchor="left"),
+            yaxis=dict(scaleanchor="x", scaleratio=1),
+            margin=dict(l=20, r=20, b=20, t=55)
+        )
         st.plotly_chart(fig_slope, use_container_width=True)
     with col2:
         # Aspect Heatmap (Compass Direction of slope)
@@ -88,7 +98,11 @@ with tabs[1]:
             colorscale="HSV",
             colorbar=dict(title="Aspect (°)", len=0.8)
         ))
-        fig_aspect.update_layout(title="Slope Aspect Heading (0°=East, 90°=North, 180°=West, 270°=South)", yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=20, r=20, b=20, t=35))
+        fig_aspect.update_layout(
+            title=dict(text="Slope Aspect Heading (0°=East, 90°=North, 180°=West, 270°=South)", y=0.96, x=0.02, xanchor="left"),
+            yaxis=dict(scaleanchor="x", scaleratio=1),
+            margin=dict(l=20, r=20, b=20, t=55)
+        )
         st.plotly_chart(fig_aspect, use_container_width=True)
 
 with tabs[2]:
@@ -100,7 +114,11 @@ with tabs[2]:
             colorscale="Plasma",
             colorbar=dict(title="Roughness σ (m)", len=0.8)
         ))
-        fig_rough.update_layout(title="Micro-Relief Surface Roughness", yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=20, r=20, b=20, t=35))
+        fig_rough.update_layout(
+            title=dict(text="Micro-Relief Surface Roughness", y=0.96, x=0.02, xanchor="left"),
+            yaxis=dict(scaleanchor="x", scaleratio=1),
+            margin=dict(l=20, r=20, b=20, t=55)
+        )
         st.plotly_chart(fig_rough, use_container_width=True)
     with col4:
         # Hazard Heatmap
@@ -109,7 +127,11 @@ with tabs[2]:
             colorscale="Inferno",
             colorbar=dict(title="Hazard Index", len=0.8)
         ))
-        fig_haz.update_layout(title="Composite Traversability Hazard Index", yaxis=dict(scaleanchor="x", scaleratio=1), margin=dict(l=20, r=20, b=20, t=35))
+        fig_haz.update_layout(
+            title=dict(text="Composite Traversability Hazard Index", y=0.96, x=0.02, xanchor="left"),
+            yaxis=dict(scaleanchor="x", scaleratio=1),
+            margin=dict(l=20, r=20, b=20, t=55)
+        )
         st.plotly_chart(fig_haz, use_container_width=True)
 
 with tabs[3]:
@@ -141,9 +163,9 @@ with tabs[3]:
         )
     ))
     fig_class.update_layout(
-        title="AI Geological Surface Classification",
+        title=dict(text="AI Geological Surface Classification", y=0.96, x=0.02, xanchor="left"),
         yaxis=dict(scaleanchor="x", scaleratio=1),
-        margin=dict(l=20, r=20, b=20, t=35)
+        margin=dict(l=20, r=20, b=20, t=55)
     )
     st.plotly_chart(fig_class, use_container_width=True)
     st.info("The classification engine segments terrain into distinct geotechnical traversability zones. Boulder fields and steep cliffs automatically receive high traversal cost penalties in the path planner.")

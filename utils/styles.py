@@ -92,7 +92,8 @@ def apply_shared_styles() -> None:
         line-height: 1.30 !important;
         margin-bottom: 0.25rem !important;
         white-space: normal !important;
-        word-break: break-word !important;
+        word-break: normal !important;
+        overflow-wrap: break-word !important;
         color: #94A3B8 !important;
     }
 
@@ -117,7 +118,7 @@ def apply_shared_styles() -> None:
     }
 
     /* =========================================================================
-       5. Tabs, Alerts & Separator Rhythm
+       5. Tabs, Alerts, Charts & Separator Rhythm
        ========================================================================= */
     .stTabs [data-baseweb="tab-list"] {
         margin-top: 0.75rem !important;
@@ -133,6 +134,11 @@ def apply_shared_styles() -> None:
         margin-top: 0.85rem !important;
         margin-bottom: 1.25rem !important;
         line-height: 1.45 !important;
+    }
+
+    .js-plotly-plot, [data-testid="stPlotlyChart"] {
+        margin-top: 0.50rem !important;
+        margin-bottom: 1.50rem !important;
     }
 
     hr {
@@ -153,13 +159,16 @@ def apply_shared_styles() -> None:
         }
         h2, [data-testid="stHeadingWithActionElements"] h2 {
             font-size: 1.40rem !important;
+            line-height: 1.30 !important;
         }
         h3, [data-testid="stHeadingWithActionElements"] h3 {
             font-size: 1.20rem !important;
+            line-height: 1.30 !important;
             margin-top: 1.25rem !important;
         }
         h4, [data-testid="stHeadingWithActionElements"] h4 {
             font-size: 1.05rem !important;
+            line-height: 1.30 !important;
             margin-top: 1.15rem !important;
         }
         [data-testid="stCaptionContainer"], .stCaption {
@@ -167,15 +176,16 @@ def apply_shared_styles() -> None:
             margin-bottom: 0.95rem !important;
         }
         [data-testid="stMetric"] {
-            min-height: 88px !important;
-            padding: 0.55rem 0.65rem !important;
-            margin-bottom: 1.15rem !important;
+            min-height: 84px !important;
+            padding: 0.50rem 0.60rem !important;
+            margin-bottom: 1.10rem !important;
         }
         [data-testid="stMetricValue"] {
             font-size: 1.25rem !important;
         }
         [data-testid="stMetricLabel"] {
-            font-size: 0.80rem !important;
+            font-size: 0.78rem !important;
+            line-height: 1.25 !important;
         }
     }
 

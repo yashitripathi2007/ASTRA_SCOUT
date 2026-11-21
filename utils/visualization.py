@@ -115,15 +115,26 @@ def create_3d_terrain_surface(
         ))
 
     fig.update_layout(
-        title="Interactive 3D Planetary Topography & Cooperative Trajectories",
+        title=dict(
+            text="Interactive 3D Planetary Topography & Cooperative Trajectories",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
         scene=dict(
             xaxis_title="X Grid (m)",
             yaxis_title="Y Grid (m)",
             zaxis_title="Elevation (m)",
             aspectmode="data"
         ),
-        margin=dict(l=0, r=0, b=0, t=35),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        margin=dict(l=10, r=10, b=30, t=75),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.08,
+            xanchor="center",
+            x=0.5
+        )
     )
     return fig
 
@@ -209,11 +220,23 @@ def create_multisource_knowledge_map(
         ))
 
     fig.update_layout(
-        title="Multi-Source Sensor Fusion Grid (Provenanced Observation Layers)",
+        title=dict(
+            text="Multi-Source Sensor Fusion Grid (Provenanced Observation Layers)",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
         xaxis_title="X Grid (m)",
         yaxis_title="Y Grid (m)",
         yaxis=dict(scaleanchor="x", scaleratio=1),
-        margin=dict(l=20, r=20, b=20, t=40)
+        margin=dict(l=20, r=20, b=60, t=75),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5
+        )
     )
     return fig
 
@@ -247,11 +270,23 @@ def create_hazard_traversability_map(
         ))
 
     fig.update_layout(
-        title="Composite Terrain Hazard & Obstacle Field",
+        title=dict(
+            text="Composite Terrain Hazard & Obstacle Field",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
         xaxis_title="X Grid (m)",
         yaxis_title="Y Grid (m)",
         yaxis=dict(scaleanchor="x", scaleratio=1),
-        margin=dict(l=20, r=20, b=20, t=40)
+        margin=dict(l=20, r=20, b=60, t=75),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.18,
+            xanchor="center",
+            x=0.5
+        )
     )
     return fig
 
@@ -298,10 +333,21 @@ def create_energy_comparison_figure(
 
     fig.update_layout(
         barmode="stack",
-        title="Mission Energy Consumption Breakdown",
+        title=dict(
+            text="Mission Energy Consumption Breakdown",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
         yaxis_title="Energy (Watt-hours)",
-        margin=dict(l=20, r=20, b=20, t=40),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        margin=dict(l=20, r=20, b=60, t=85),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5
+        )
     )
     return fig
 
@@ -334,8 +380,20 @@ def create_telemetry_history_chart(
     fig.add_trace(go.Bar(name="ASTRA-SCOUT", x=["ASTRA-SCOUT"], y=[coop_vals[2]], marker_color="#00FFAA", showlegend=False), row=1, col=3)
 
     fig.update_layout(
-        title="Mission Performance & Efficiency Comparison",
-        margin=dict(l=20, r=20, b=20, t=40),
+        title=dict(
+            text="Mission Performance & Efficiency Comparison",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
+        margin=dict(l=20, r=20, b=60, t=85),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5
+        ),
         showlegend=True
     )
     return fig
