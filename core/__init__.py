@@ -9,8 +9,13 @@ from .sensor_fusion import SensorFusionGrid, ObservationSource
 from .energy_model import RoverEnergyModel, DroneEnergyModel
 from .scout import DroneScout, FlightPattern
 from .rover import RoverAgent
-from .decision_engine import AdaptiveDecisionEngine, DecisionRecommendation
-from .navigation import PathPlanner, plan_mission
+from .decision_engine import (
+    AdaptiveDecisionEngine,
+    DecisionRecommendation,
+    MissionCostConfig,
+    compute_mission_cost,
+)
+from .navigation import PathPlanner, plan_mission, StrategyMode, MissionResult
 
 __all__ = [
     "PlanetaryEnvironment",
@@ -26,6 +31,10 @@ __all__ = [
     "RoverAgent",
     "AdaptiveDecisionEngine",
     "DecisionRecommendation",
+    "MissionCostConfig",
+    "compute_mission_cost",
     "PathPlanner",
     "plan_mission",
+    "StrategyMode",
+    "MissionResult",
 ]

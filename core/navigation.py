@@ -1,27 +1,44 @@
 """
 Energy-Aware Navigation & Mission Simulation for ASTRA-SCOUT.
 Implements multi-objective directional A* path planning and dynamic replanning
-simulation comparing unassisted rover vs cooperative ASTRA-SCOUT system.
+simulation comparing three strategies under identical conditions:
+1. Rover-Only (No Scouting)
+2. Always-Scout (Unconditional aerial reconnaissance)
+3. Adaptive-Scout (Decision-theoretic scouting based on expected information benefit vs cost)
 """
 
 import heapq
 import math
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from enum import Enum
+from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
 from .sensor_fusion import SensorFusionGrid, ObservationSource
 from .rover import RoverAgent
 from .scout import DroneScout, FlightPattern
 from .energy_model import RoverEnergyModel, DroneEnergyModel
+from .decision_engine import (
+    AdaptiveDecisionEngine,
+    DecisionRecommendation,
+    MissionCostConfig,
+    compute_mission_cost,
+)
 
 
 NEIGHBORS_8 = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
 
 
+class StrategyMode(str, Enum):
+    ROVER_ONLY = "Rover-Only (No Scouting)"
+    ALWAYS_SCOUT = "Always-Scout"
+    ADAPTIVE_SCOUT = "Adaptive-Scout"
+
+
 @dataclass
 class MissionResult:
-    """Comprehensive comparison result of a rover-drone mission."""
+    """Comprehensive comparison result of all three exploration strategies."""
+    # Backward compatible fields
     rover_only_path: List[Tuple[int, int]]
     cooperative_path: List[Tuple[int, int]]
     rover_only_telemetry: Dict
@@ -31,6 +48,18 @@ class MissionResult:
     coverage_stats: Dict
     rover_only_replans: int
     cooperative_replans: int
+
+    # Adaptive strategy and 3-way benchmarking fields
+    adaptive_path: Optional[List[Tuple[int, int]]] = None
+    adaptive_telemetry: Optional[Dict] = None
+    adaptive_drone_telemetry: Optional[Dict] = None
+    adaptive_replans: int = 0
+    adaptive_coverage_stats: Optional[Dict] = None
+    baseline_coverage_stats: Optional[Dict] = None
+    mission_costs: Optional[Dict[str, float]] = None
+    route_risks: Optional[Dict[str, float]] = None
+    cost_config: Optional[MissionCostConfig] = None
+    strategy_results: Optional[Dict[str, Any]] = None
 
 
 class PathPlanner:
@@ -123,53 +152,39 @@ class PathPlanner:
         return None, float("inf")
 
 
-def plan_mission(
+def simulate_rover_traversal(
     environment,
     terrain,
-    decision_engine,
-    scout: Optional[DroneScout] = None,
+    fusion_grid: SensorFusionGrid,
+    planner: PathPlanner,
     rover_radius: int = 5,
-    scout_pattern: FlightPattern = FlightPattern.CORRIDOR,
-    caution_penalty: float = 2.5
-) -> MissionResult:
+    rover_battery_wh: float = 120.0,
+    caution_penalty: float = 2.5,
+    max_steps_mult: int = 4
+) -> RoverAgent:
     """
-    Executes full cooperative exploration mission simulation.
-    Compares:
-    1. Blind Rover-Only Baseline: traverses with only local perception, encounters obstacles,
-       and must repeatedly replan.
-    2. Cooperative ASTRA-SCOUT System: aerial scout maps corridor ahead, AI terrain intelligence
-       fuses layers, and rover navigates smoothly with optimal energy efficiency.
+    Simulates dynamic step-by-step rover traversal with local perception
+    and dynamic replanning upon discovering unforeseen obstacles.
     """
-    planner = PathPlanner()
-
-    # --- 1. Evaluate Decision Engine ---
-    decision = decision_engine.evaluate_scout_tradeoff(
-        environment, terrain, environment.start, environment.goal
-    )
-
-    # --- 2. Baseline: Rover-Only Mission (Dynamic Replanning) ---
-    baseline_fusion = SensorFusionGrid(environment.size)
-    baseline_rover = RoverAgent(
+    rover = RoverAgent(
         start_pos=environment.start,
         sensor_radius=rover_radius,
-        battery_capacity_wh=120.0
+        battery_capacity_wh=rover_battery_wh
     )
-    # Rover initial scan at start
-    baseline_rover.scan_surroundings(environment, baseline_fusion, terrain.hazard_index)
+    # Rover initial scan at start location
+    rover.scan_surroundings(environment, fusion_grid, terrain.hazard_index)
 
-    # Initial plan with limited local knowledge
     active_path, _ = planner.plan(
-        baseline_fusion, environment.elevation, environment.start, environment.goal, caution_penalty
+        fusion_grid, environment.elevation, environment.start, environment.goal, caution_penalty
     )
 
-    # Dynamic execution simulation
-    max_steps = environment.size * 4
+    max_steps = environment.size * max_steps_mult
     step_count = 0
-    while active_path and baseline_rover.current_pos != environment.goal and step_count < max_steps:
+
+    while active_path and rover.current_pos != environment.goal and step_count < max_steps:
         step_count += 1
-        # Find next waypoint
         try:
-            curr_idx = active_path.index(baseline_rover.current_pos)
+            curr_idx = active_path.index(rover.current_pos)
         except ValueError:
             curr_idx = 0
 
@@ -178,126 +193,241 @@ def plan_mission(
 
         next_pos = active_path[curr_idx + 1]
 
-        # Check if next_pos or immediately upcoming path is an impassable obstacle
+        # Check if next_pos is an impassable obstacle
         if environment.obstacles[next_pos]:
-            # Rover detects obstacle upon approach!
-            baseline_rover.replanning_events.append(baseline_rover.current_pos)
-            baseline_rover.obstacles_discovered.append(next_pos)
-            baseline_fusion.obstacle_belief[next_pos] = True
-            baseline_fusion.hazard_belief[next_pos] = 1.0
+            rover.replanning_events.append(rover.current_pos)
+            rover.obstacles_discovered.append(next_pos)
+            fusion_grid.obstacle_belief[next_pos] = True
+            fusion_grid.hazard_belief[next_pos] = 1.0
 
-            # Trigger Dynamic Replanning from current position
+            # Dynamic replanning from current position
             new_path, _ = planner.plan(
-                baseline_fusion, environment.elevation, baseline_rover.current_pos, environment.goal, caution_penalty
+                fusion_grid, environment.elevation, rover.current_pos, environment.goal, caution_penalty
             )
             if new_path:
                 active_path = new_path
                 continue
             else:
-                # Trapped
                 break
 
         # Move to next_pos
-        baseline_rover.step_to(
+        rover.step_to(
             next_pos=next_pos,
             environment=environment,
-            fusion_grid=baseline_fusion,
+            fusion_grid=fusion_grid,
             terrain_roughness=terrain.roughness,
             terrain_hazard=terrain.hazard_index
         )
 
-        # Check lookahead on newly observed terrain
-        if baseline_rover.check_path_collision(active_path, curr_idx + 1, baseline_fusion):
-            baseline_rover.replanning_events.append(baseline_rover.current_pos)
+        # Check collision lookahead on newly observed terrain
+        if rover.check_path_collision(active_path, curr_idx + 1, fusion_grid):
+            rover.replanning_events.append(rover.current_pos)
             new_path, _ = planner.plan(
-                baseline_fusion, environment.elevation, baseline_rover.current_pos, environment.goal, caution_penalty
+                fusion_grid, environment.elevation, rover.current_pos, environment.goal, caution_penalty
             )
             if new_path:
                 active_path = new_path
 
-    rover_only_telemetry = baseline_rover.get_mission_summary()
+    return rover
 
-    # --- 3. ASTRA-SCOUT Cooperative Mission ---
-    coop_fusion = SensorFusionGrid(environment.size)
-    coop_rover = RoverAgent(
-        start_pos=environment.start,
-        sensor_radius=rover_radius,
-        battery_capacity_wh=120.0
+
+def plan_mission(
+    environment,
+    terrain,
+    decision_engine: AdaptiveDecisionEngine,
+    scout: Optional[DroneScout] = None,
+    rover_radius: int = 5,
+    scout_pattern: FlightPattern = FlightPattern.CORRIDOR,
+    caution_penalty: float = 2.5,
+    rover_battery_wh: float = 120.0,
+    drone_battery_wh: float = 40.0,
+    cost_config: Optional[MissionCostConfig] = None
+) -> MissionResult:
+    """
+    Executes full multi-strategy planetary exploration mission simulation.
+    Simulates three distinct strategies under identical conditions:
+    1. Rover-Only: Local perception only, frequent dynamic replanning on obstacles.
+    2. Always-Scout: Unconditional aerial drone reconnaissance ahead of the rover.
+    3. Adaptive-Scout: Evaluates Expected Information Gain (EIG), net energy ROI,
+       and battery feasibility to selectively deploy scouting.
+    """
+    planner = PathPlanner()
+    cfg = cost_config or MissionCostConfig()
+
+    # --- 1. Evaluate Decision Engine ---
+    decision = decision_engine.evaluate_scout_tradeoff(
+        environment=environment,
+        terrain=terrain,
+        start=environment.start,
+        goal=environment.goal,
+        rover_battery_wh=rover_battery_wh,
+        drone_battery_wh=drone_battery_wh,
+        cost_config=cfg
     )
-    # Initial rover scan
-    coop_rover.scan_surroundings(environment, coop_fusion, terrain.hazard_index)
 
-    # Aerial Drone Scout Execution
-    scout_telemetry = None
+    # --- 2. Strategy 1: Rover-Only Baseline (Dynamic Replanning) ---
+    baseline_fusion = SensorFusionGrid(environment.size)
+    baseline_rover = simulate_rover_traversal(
+        environment=environment,
+        terrain=terrain,
+        fusion_grid=baseline_fusion,
+        planner=planner,
+        rover_radius=rover_radius,
+        rover_battery_wh=rover_battery_wh,
+        caution_penalty=caution_penalty
+    )
+    rover_only_telemetry = baseline_rover.get_mission_summary()
+    rover_only_coverage = baseline_fusion.get_coverage_breakdown()
+    rover_only_risk = float(np.mean([terrain.hazard_index[p] for p in baseline_rover.traversed_path])) if baseline_rover.traversed_path else 0.0
+    rover_only_cost = compute_mission_cost(
+        rover_only_telemetry["total_energy_wh"], 0.0, rover_only_risk, cfg
+    )
+
+    # --- 3. Strategy 2: Always-Scout (Unconditional Cooperative Reconnaissance) ---
+    always_fusion = SensorFusionGrid(environment.size)
+    always_rover_init = RoverAgent(environment.start, rover_radius, rover_battery_wh)
+    always_rover_init.scan_surroundings(environment, always_fusion, terrain.hazard_index)
+
+    always_drone_telemetry = None
     if scout is not None:
-        scout_telemetry = scout.execute_survey(
+        always_drone_telemetry = scout.execute_survey(
             start=environment.start,
             goal=environment.goal,
             environment=environment,
-            fusion_grid=coop_fusion,
+            fusion_grid=always_fusion,
             pattern=scout_pattern
         )
 
-    # Cooperative A* planning on fused multi-tier belief map
-    coop_path, _ = planner.plan(
-        coop_fusion, environment.elevation, environment.start, environment.goal, caution_penalty
+    always_rover = simulate_rover_traversal(
+        environment=environment,
+        terrain=terrain,
+        fusion_grid=always_fusion,
+        planner=planner,
+        rover_radius=rover_radius,
+        rover_battery_wh=rover_battery_wh,
+        caution_penalty=caution_penalty
+    )
+    always_telemetry = always_rover.get_mission_summary()
+    always_coverage = always_fusion.get_coverage_breakdown()
+    always_risk = float(np.mean([terrain.hazard_index[p] for p in always_rover.traversed_path])) if always_rover.traversed_path else 0.0
+    always_drone_wh = float(always_drone_telemetry["flight_energy_wh"]) if always_drone_telemetry else 0.0
+    always_cost = compute_mission_cost(
+        always_telemetry["total_energy_wh"], always_drone_wh, always_risk, cfg
     )
 
-    # Cooperative rover execution
-    step_count = 0
-    active_coop_path = coop_path
-    while active_coop_path and coop_rover.current_pos != environment.goal and step_count < max_steps:
-        step_count += 1
-        try:
-            curr_idx = active_coop_path.index(coop_rover.current_pos)
-        except ValueError:
-            curr_idx = 0
+    # --- 4. Strategy 3: Adaptive-Scout (Selective Information-Theoretic Reconnaissance) ---
+    adaptive_fusion = SensorFusionGrid(environment.size)
+    adaptive_rover_init = RoverAgent(environment.start, rover_radius, rover_battery_wh)
+    adaptive_rover_init.scan_surroundings(environment, adaptive_fusion, terrain.hazard_index)
 
-        if curr_idx + 1 >= len(active_coop_path):
-            break
-
-        next_pos = active_coop_path[curr_idx + 1]
-
-        if environment.obstacles[next_pos]:
-            # Rare obstacle discovery if drone missed it
-            coop_rover.replanning_events.append(coop_rover.current_pos)
-            coop_fusion.obstacle_belief[next_pos] = True
-            coop_fusion.hazard_belief[next_pos] = 1.0
-            new_path, _ = planner.plan(
-                coop_fusion, environment.elevation, coop_rover.current_pos, environment.goal, caution_penalty
+    adaptive_drone_telemetry = None
+    if scout is not None:
+        if decision.recommendation == DecisionRecommendation.SCOUT_RECOMMENDED:
+            adaptive_drone_telemetry = scout.execute_survey(
+                start=environment.start,
+                goal=environment.goal,
+                environment=environment,
+                fusion_grid=adaptive_fusion,
+                pattern=scout_pattern
             )
-            if new_path:
-                active_coop_path = new_path
-                continue
-            else:
-                break
+        elif decision.recommendation == DecisionRecommendation.TARGETED_SCOUT:
+            adaptive_drone_telemetry = scout.execute_survey(
+                start=environment.start,
+                goal=environment.goal,
+                environment=environment,
+                fusion_grid=adaptive_fusion,
+                pattern=FlightPattern.TARGETED_CHOKEPOINTS
+            )
+        else:
+            # DRIVE_DIRECT: Drone remains grounded, saves 100% of flight overhead
+            adaptive_drone_telemetry = None
 
-        coop_rover.step_to(
-            next_pos=next_pos,
-            environment=environment,
-            fusion_grid=coop_fusion,
-            terrain_roughness=terrain.roughness,
-            terrain_hazard=terrain.hazard_index
-        )
+    adaptive_rover = simulate_rover_traversal(
+        environment=environment,
+        terrain=terrain,
+        fusion_grid=adaptive_fusion,
+        planner=planner,
+        rover_radius=rover_radius,
+        rover_battery_wh=rover_battery_wh,
+        caution_penalty=caution_penalty
+    )
+    adaptive_telemetry = adaptive_rover.get_mission_summary()
+    adaptive_coverage = adaptive_fusion.get_coverage_breakdown()
+    adaptive_risk = float(np.mean([terrain.hazard_index[p] for p in adaptive_rover.traversed_path])) if adaptive_rover.traversed_path else 0.0
+    adaptive_drone_wh = float(adaptive_drone_telemetry["flight_energy_wh"]) if adaptive_drone_telemetry else 0.0
+    adaptive_cost = compute_mission_cost(
+        adaptive_telemetry["total_energy_wh"], adaptive_drone_wh, adaptive_risk, cfg
+    )
 
-    coop_telemetry = coop_rover.get_mission_summary()
+    # Combined costs and risks dictionary
+    mission_costs = {
+        "rover_only": rover_only_cost,
+        "always_scout": always_cost,
+        "adaptive_scout": adaptive_cost
+    }
+    route_risks = {
+        "rover_only": round(rover_only_risk, 3),
+        "always_scout": round(always_risk, 3),
+        "adaptive_scout": round(adaptive_risk, 3)
+    }
+
+    strategy_results = {
+        StrategyMode.ROVER_ONLY.value: {
+            "path": baseline_rover.traversed_path,
+            "telemetry": rover_only_telemetry,
+            "drone_telemetry": None,
+            "replans": len(baseline_rover.replanning_events),
+            "coverage": rover_only_coverage,
+            "route_risk": rover_only_risk,
+            "mission_cost": rover_only_cost,
+        },
+        StrategyMode.ALWAYS_SCOUT.value: {
+            "path": always_rover.traversed_path,
+            "telemetry": always_telemetry,
+            "drone_telemetry": always_drone_telemetry,
+            "replans": len(always_rover.replanning_events),
+            "coverage": always_coverage,
+            "route_risk": always_risk,
+            "mission_cost": always_cost,
+        },
+        StrategyMode.ADAPTIVE_SCOUT.value: {
+            "path": adaptive_rover.traversed_path,
+            "telemetry": adaptive_telemetry,
+            "drone_telemetry": adaptive_drone_telemetry,
+            "replans": len(adaptive_rover.replanning_events),
+            "coverage": adaptive_coverage,
+            "route_risk": adaptive_risk,
+            "mission_cost": adaptive_cost,
+        }
+    }
 
     return MissionResult(
         rover_only_path=baseline_rover.traversed_path,
-        cooperative_path=coop_rover.traversed_path,
+        cooperative_path=always_rover.traversed_path,
         rover_only_telemetry=rover_only_telemetry,
-        cooperative_telemetry=coop_telemetry,
-        drone_telemetry=scout_telemetry,
+        cooperative_telemetry=always_telemetry,
+        drone_telemetry=always_drone_telemetry,
         decision_assessment={
             "recommendation": decision.recommendation.value,
             "confidence_score": decision.confidence_score,
             "terrain_complexity": decision.terrain_complexity_score,
+            "path_uncertainty": decision.path_uncertainty_score,
             "estimated_rover_saving_wh": decision.estimated_rover_saving_wh,
             "estimated_scout_cost_wh": decision.estimated_scout_cost_wh,
             "expected_net_benefit_wh": decision.expected_net_benefit_wh,
             "rationale": decision.rational
         },
-        coverage_stats=coop_fusion.get_coverage_breakdown(),
+        coverage_stats=always_coverage,
         rover_only_replans=len(baseline_rover.replanning_events),
-        cooperative_replans=len(coop_rover.replanning_events)
+        cooperative_replans=len(always_rover.replanning_events),
+        adaptive_path=adaptive_rover.traversed_path,
+        adaptive_telemetry=adaptive_telemetry,
+        adaptive_drone_telemetry=adaptive_drone_telemetry,
+        adaptive_replans=len(adaptive_rover.replanning_events),
+        adaptive_coverage_stats=adaptive_coverage,
+        baseline_coverage_stats=rover_only_coverage,
+        mission_costs=mission_costs,
+        route_risks=route_risks,
+        cost_config=cfg,
+        strategy_results=strategy_results
     )

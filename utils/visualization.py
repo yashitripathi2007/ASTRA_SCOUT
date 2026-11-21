@@ -18,7 +18,8 @@ def create_3d_terrain_surface(
     drone_waypoints: Optional[List[Tuple[int, int]]] = None,
     start: Optional[Tuple[int, int]] = None,
     goal: Optional[Tuple[int, int]] = None,
-    subsample: int = 1
+    subsample: int = 1,
+    adaptive_path: Optional[List[Tuple[int, int]]] = None
 ) -> go.Figure:
     """
     Renders an interactive 3D topography surface with overlaid rover paths and drone flight.
@@ -41,7 +42,7 @@ def create_3d_terrain_surface(
         name="Topography"
     ))
 
-    # Rover-Only Baseline Route (Red / Orange dashed)
+    # Rover-Only Baseline Route (Red dashed)
     if rover_path and len(rover_path) > 1:
         rx = [p[1] for p in rover_path]
         ry = [p[0] for p in rover_path]
@@ -49,12 +50,12 @@ def create_3d_terrain_surface(
         fig.add_trace(go.Scatter3d(
             x=rx, y=ry, z=rz,
             mode="lines+markers",
-            line=dict(color="#FF4136", width=5, dash="dash"),
+            line=dict(color="#FF4136", width=4, dash="dash"),
             marker=dict(size=2, color="#FF4136"),
             name="Rover-Only Baseline (Replanning)"
         ))
 
-    # ASTRA-SCOUT Cooperative Route (Bright Green / Cyan solid)
+    # Always-Scout Cooperative Route (Cyan solid)
     if coop_path and len(coop_path) > 1:
         cx = [p[1] for p in coop_path]
         cy = [p[0] for p in coop_path]
@@ -62,9 +63,22 @@ def create_3d_terrain_surface(
         fig.add_trace(go.Scatter3d(
             x=cx, y=cy, z=cz,
             mode="lines+markers",
-            line=dict(color="#00FFAA", width=7),
-            marker=dict(size=3, color="#00FFAA"),
-            name="ASTRA-SCOUT Route"
+            line=dict(color="#00D4FF", width=5),
+            marker=dict(size=3, color="#00D4FF"),
+            name="Always-Scout Route"
+        ))
+
+    # Adaptive-Scout Route (Gold solid)
+    if adaptive_path and len(adaptive_path) > 1:
+        ax = [p[1] for p in adaptive_path]
+        ay = [p[0] for p in adaptive_path]
+        az = [elevation[p[0], p[1]] + 0.65 for p in adaptive_path]
+        fig.add_trace(go.Scatter3d(
+            x=ax, y=ay, z=az,
+            mode="lines+markers",
+            line=dict(color="#FFD700", width=6),
+            marker=dict(size=3, color="#FFD700"),
+            name="Adaptive-Scout Route"
         ))
 
     # Drone Flight Trajectory (High altitude cyan flightline)
@@ -245,27 +259,39 @@ def create_hazard_traversability_map(
 def create_energy_comparison_figure(
     rover_only_wh: float,
     coop_rover_wh: float,
-    drone_wh: float
+    drone_wh: float,
+    adaptive_rover_wh: Optional[float] = None,
+    adaptive_drone_wh: Optional[float] = None
 ) -> go.Figure:
-    """Renders detailed energy breakdown comparing baseline vs cooperative system."""
-    total_coop_wh = coop_rover_wh + drone_wh
-    categories = ["Rover-Only Baseline", "ASTRA-SCOUT Cooperative"]
+    """Renders detailed energy breakdown comparing baseline vs always-scout vs adaptive-scout."""
+    if adaptive_rover_wh is not None:
+        categories = ["Rover-Only", "Always-Scout", "Adaptive-Scout"]
+        rover_vals = [rover_only_wh, coop_rover_wh, adaptive_rover_wh]
+        drone_vals = [0.0, drone_wh, adaptive_drone_wh or 0.0]
+        rover_colors = ["#FF5722", "#00BCD4", "#4CAF50"]
+        drone_colors = ["#000000", "#00838F", "#2E7D32"]
+    else:
+        categories = ["Rover-Only Baseline", "ASTRA-SCOUT Cooperative"]
+        rover_vals = [rover_only_wh, coop_rover_wh]
+        drone_vals = [0.0, drone_wh]
+        rover_colors = ["#FF5722", "#4CAF50"]
+        drone_colors = ["#000000", "#00BCD4"]
 
     fig = go.Figure(data=[
         go.Bar(
             name="Rover Surface Energy",
             x=categories,
-            y=[rover_only_wh, coop_rover_wh],
-            marker_color=["#FF5722", "#4CAF50"],
-            text=[f"{rover_only_wh:.1f} Wh", f"{coop_rover_wh:.1f} Wh"],
+            y=rover_vals,
+            marker_color=rover_colors,
+            text=[f"{v:.1f} Wh" for v in rover_vals],
             textposition="auto"
         ),
         go.Bar(
             name="Drone Aerial Energy Overhead",
             x=categories,
-            y=[0.0, drone_wh],
-            marker_color=["#000000", "#00BCD4"],
-            text=["", f"{drone_wh:.1f} Wh"],
+            y=drone_vals,
+            marker_color=drone_colors,
+            text=[f"{v:.1f} Wh" if v > 0 else "" for v in drone_vals],
             textposition="auto"
         )
     ])
