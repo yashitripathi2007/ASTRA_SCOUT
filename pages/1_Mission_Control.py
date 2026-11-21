@@ -16,6 +16,7 @@ from utils.visualization import (
     create_3d_terrain_surface,
     create_multisource_knowledge_map,
     create_energy_comparison_figure,
+    create_confidence_distance_chart,
 )
 from utils.metrics import compute_comparative_metrics
 from utils.styles import apply_shared_styles
@@ -62,12 +63,20 @@ with st.sidebar:
     w_drone = st.slider("Drone Energy Weight", min_value=0.2, max_value=3.0, value=1.0, step=0.1)
     w_risk = st.slider("Route Risk Weight", min_value=1.0, max_value=30.0, value=15.0, step=1.0)
 
+    st.subheader("🛡️ Terrain Confidence Gating")
+    conf_threshold = st.slider("Confidence Gate Threshold", min_value=0.10, max_value=0.95, value=0.60, step=0.05)
+    conf_lookahead = st.slider("Lookahead Window (m)", min_value=5.0, max_value=35.0, value=15.0, step=1.0)
+    conf_hysteresis = st.slider("Hysteresis Buffer", min_value=0.01, max_value=0.15, value=0.05, step=0.01)
+
     re_run = st.button("🚀 Run Mission Simulation", type="primary", use_container_width=True)
 
 cost_cfg = MissionCostConfig(
     weight_rover_energy=w_rover,
     weight_drone_energy=w_drone,
-    weight_route_risk=w_risk
+    weight_route_risk=w_risk,
+    confidence_threshold=conf_threshold,
+    confidence_lookahead_m=conf_lookahead,
+    confidence_hysteresis=conf_hysteresis
 )
 
 # Run or Update Simulation
@@ -125,7 +134,19 @@ elif "Chokepoint" in dec["recommendation"]:
 else:
     st.info(f"**Adaptive Arbiter: {dec['recommendation']}** — {dec['rationale']}")
 
-# 2. Key Telemetry Metrics Row
+# 2. Rover Terrain Confidence Gating Row
+conf_val = float(dec.get("terrain_confidence", dec.get("confidence_score", 0.0)))
+gate_th = float(dec.get("confidence_threshold", cost_cfg.confidence_threshold))
+delta_th = conf_val - gate_th
+gate_status = "Bypassed (High Confidence)" if dec.get("gating_bypassed", False) else ("Scout Deployed" if "Deploy" in dec.get("recommendation", "") or "Chokepoint" in dec.get("recommendation", "") else "Direct Drive Optimal")
+
+conf_c1, conf_c2, conf_c3, conf_c4 = st.columns(4)
+conf_c1.metric("Live Rover Terrain Confidence", f"{conf_val:.2f}", f"{delta_th:+.2f} vs Gate")
+conf_c2.metric("Confidence Gate Threshold", f"{gate_th:.2f}", f"Hysteresis Buffer: ±{cost_cfg.confidence_hysteresis:.2f}")
+conf_c3.metric("Scout Gate Action", f"{gate_status}", f"Recommendation: {dec.get('recommendation')}")
+conf_c4.metric("Upcoming Lookahead Window", f"{cost_cfg.confidence_lookahead_m:.1f} m", f"Resolution: {env.resolution_m:.1f} m")
+
+# 3. Key Telemetry Metrics Row
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(
     "Adaptive Net Energy Saved",
@@ -148,8 +169,13 @@ c4.metric(
     f"Epistemic σ: {stats['adaptive_mean_uncertainty']:.3f}"
 )
 
-# 3. Main Visualization Tabs
-tab1, tab2, tab3 = st.tabs(["🌐 Interactive 3D Terrain", "🗺️ Multi-Source Knowledge Map", "⚡ Energy & Strategy Telemetry"])
+# 4. Main Visualization Tabs
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🌐 Interactive 3D Terrain",
+    "🗺️ Multi-Source Knowledge Map",
+    "⚡ Energy & Strategy Telemetry",
+    "🛡️ Terrain Confidence & Step Telemetry"
+])
 
 with tab1:
     drone_wps = res.drone_telemetry.get("waypoints") if res.drone_telemetry else None
@@ -250,3 +276,29 @@ with tab3:
                 f"{stats['adaptive_distance_m']:.2f}"
             ]
         })
+
+with tab4:
+    st.subheader("🛡️ Rover Terrain Confidence vs. Mission Distance")
+    st.caption("Live computed terrain confidence over upcoming lookahead corridor evaluated at each step alongside gating threshold.")
+    conf_hist = res.confidence_history or (res.adaptive_telemetry.get("confidence_history", []) if res.adaptive_telemetry else [])
+    fig_conf = create_confidence_distance_chart(conf_hist, threshold=gate_th)
+    st.plotly_chart(fig_conf, use_container_width=True)
+
+    st.subheader("📋 Step-by-Step Traversal & Decision Telemetry")
+    if conf_hist:
+        import pandas as pd
+        df_steps = pd.DataFrame([
+            {
+                "Step": int(entry.get("step", 0)),
+                "Traversed Distance (m)": f"{float(entry.get('distance_m', 0.0)):.2f}",
+                "Position (Y, X)": f"{entry.get('position', (0, 0))}",
+                "Upcoming Terrain Confidence": f"{float(entry.get('confidence', 0.0)):.3f}",
+                "Gate Threshold": f"{float(entry.get('threshold', gate_th)):.2f}",
+                "Decision": entry.get("decision", "Drive"),
+                "Rationale": entry.get("rationale", "")
+            }
+            for entry in conf_hist
+        ])
+        st.dataframe(df_steps, use_container_width=True, hide_index=True)
+    else:
+        st.info("No step telemetry recorded.")

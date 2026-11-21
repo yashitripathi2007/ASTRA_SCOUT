@@ -10,7 +10,7 @@ Distinguishes between:
 """
 
 from enum import IntEnum
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 import numpy as np
 
 
@@ -139,6 +139,82 @@ class SensorFusionGrid:
     def unobserved_mask(self) -> np.ndarray:
         """Cells with zero observations."""
         return self.source_map == ObservationSource.UNOBSERVED
+
+    def compute_path_confidence(
+        self,
+        path: List[Tuple[int, int]],
+        current_idx: int = 0,
+        lookahead_distance_m: float = 15.0,
+        resolution_m: float = 1.0,
+        weight_observed_ground: float = 1.0,
+        weight_observed_aerial: float = 0.88,
+        weight_inferred: float = 0.40,
+        weight_unobserved: float = 0.00,
+        hazard_penalty_weight: float = 0.25
+    ) -> float:
+        """
+        Computes the terrain confidence score in [0.0, 1.0] for upcoming cells along the path.
+
+        CONCEPT:
+        Quantifies "how well do I know the ground I am about to drive on?"
+        Evaluated over a lookahead window W of upcoming path cells:
+        W = path[current_idx + 1 : current_idx + 1 + N]
+        where N = max(1, round(lookahead_distance_m / resolution_m)).
+
+        FORMULA:
+        For each upcoming cell i in W:
+            1. Knowledge weight K_i based on provenance source:
+               - ROVER_GROUND:  weight_observed_ground (1.00) -> direct ground-truth contact
+               - AERIAL_SCOUT:  weight_observed_aerial (0.88) -> aerial survey observation
+               - INFERRED:      weight_inferred        (0.40) -> AI spatial prior
+               - UNOBSERVED:    weight_unobserved      (0.00) -> completely unknown
+            2. Hazard modulation:
+               h_i = hazard_belief[i]  in [0.0, 1.0]
+               c_i = clip(K_i * (1.0 - hazard_penalty_weight * h_i), 0.0, 1.0)
+            3. Window Aggregation:
+               Confidence = (1 / |W|) * sum(c_i) if |W| > 0 else 1.0
+
+        Returns:
+            float in [0.0, 1.0]
+        """
+        if not path:
+            return 1.0
+
+        # Number of lookahead steps corresponding to lookahead distance
+        num_steps = max(1, int(round(lookahead_distance_m / max(0.1, resolution_m))))
+
+        # Slice upcoming path cells ahead of the current position
+        if current_idx < len(path) - 1:
+            upcoming_cells = path[current_idx + 1 : current_idx + 1 + num_steps]
+        else:
+            # At destination or single-point path
+            return 1.0
+
+        if not upcoming_cells:
+            return 1.0
+
+        weights_map = {
+            ObservationSource.ROVER_GROUND: float(weight_observed_ground),
+            ObservationSource.AERIAL_SCOUT: float(weight_observed_aerial),
+            ObservationSource.INFERRED: float(weight_inferred),
+            ObservationSource.UNOBSERVED: float(weight_unobserved),
+        }
+
+        cell_scores = []
+        for y, x in upcoming_cells:
+            if not (0 <= y < self.size and 0 <= x < self.size):
+                continue
+            src = self.source_map[y, x]
+            k_weight = weights_map.get(src, 0.0)
+            h_val = float(self.hazard_belief[y, x])
+            # High hazard degrades traversability confidence even if cell was seen
+            c_val = float(np.clip(k_weight * (1.0 - hazard_penalty_weight * h_val), 0.0, 1.0))
+            cell_scores.append(c_val)
+
+        if not cell_scores:
+            return 1.0
+
+        return float(np.clip(np.mean(cell_scores), 0.0, 1.0))
 
     def get_coverage_breakdown(self) -> Dict[str, float]:
         """Returns percentage breakdown of terrain knowledge categories."""

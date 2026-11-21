@@ -397,3 +397,75 @@ def create_telemetry_history_chart(
         showlegend=True
     )
     return fig
+
+
+def create_confidence_distance_chart(
+    confidence_history: List[Dict],
+    threshold: float = 0.60
+) -> go.Figure:
+    """
+    Renders live Rover Terrain Confidence vs. Mission Distance line chart.
+    Displays computed confidence score over upcoming path lookahead window
+    alongside the gating threshold.
+    """
+    fig = go.Figure()
+
+    if not confidence_history:
+        fig.add_annotation(
+            text="No telemetry data recorded for confidence evaluation.",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False
+        )
+        return fig
+
+    distances = [float(entry.get("distance_m", 0.0)) for entry in confidence_history]
+    confidences = [float(entry.get("confidence", 0.0)) for entry in confidence_history]
+    steps = [entry.get("step", i) for i, entry in enumerate(confidence_history)]
+    decisions = [entry.get("decision", "Drive") for entry in confidence_history]
+
+    # Rover Terrain Confidence curve
+    hover_text = [
+        f"Step: {s}<br>Distance: {d:.2f} m<br>Confidence: {c:.3f}<br>Decision: {dec}"
+        for s, d, c, dec in zip(steps, distances, confidences, decisions)
+    ]
+
+    fig.add_trace(go.Scatter(
+        x=distances,
+        y=confidences,
+        mode="lines+markers",
+        line=dict(color="#FFD700", width=3),
+        marker=dict(size=5, color="#FFD700"),
+        text=hover_text,
+        hoverinfo="text",
+        name="Rover Terrain Confidence"
+    ))
+
+    # Gating Threshold reference line
+    max_dist = max(distances) if distances else 10.0
+    fig.add_trace(go.Scatter(
+        x=[0.0, max_dist],
+        y=[threshold, threshold],
+        mode="lines",
+        line=dict(color="#FF4136", width=2, dash="dash"),
+        name=f"Confidence Gate Threshold ({threshold:.2f})"
+    ))
+
+    fig.update_layout(
+        title=dict(
+            text="Rover Upcoming Terrain Confidence vs. Traversed Distance",
+            y=0.98,
+            x=0.02,
+            xanchor="left"
+        ),
+        xaxis_title="Mission Distance Traveled (m)",
+        yaxis_title="Upcoming Terrain Confidence [0.0 - 1.0]",
+        yaxis=dict(range=[-0.05, 1.05]),
+        margin=dict(l=20, r=20, b=60, t=85),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            xanchor="center",
+            x=0.5
+        )
+    )
+    return fig

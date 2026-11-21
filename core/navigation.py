@@ -60,6 +60,7 @@ class MissionResult:
     route_risks: Optional[Dict[str, float]] = None
     cost_config: Optional[MissionCostConfig] = None
     strategy_results: Optional[Dict[str, Any]] = None
+    confidence_history: Optional[List[Dict[str, Any]]] = None
 
 
 class PathPlanner:
@@ -160,12 +161,14 @@ def simulate_rover_traversal(
     rover_radius: int = 5,
     rover_battery_wh: float = 120.0,
     caution_penalty: float = 2.5,
-    max_steps_mult: int = 4
+    max_steps_mult: int = 4,
+    cost_config: Optional[MissionCostConfig] = None
 ) -> RoverAgent:
     """
-    Simulates dynamic step-by-step rover traversal with local perception
-    and dynamic replanning upon discovering unforeseen obstacles.
+    Simulates dynamic step-by-step rover traversal with local perception,
+    upcoming terrain confidence tracking, and dynamic replanning upon discovering unforeseen obstacles.
     """
+    cfg = cost_config or MissionCostConfig()
     rover = RoverAgent(
         start_pos=environment.start,
         sensor_radius=rover_radius,
@@ -177,6 +180,29 @@ def simulate_rover_traversal(
     active_path, _ = planner.plan(
         fusion_grid, environment.elevation, environment.start, environment.goal, caution_penalty
     )
+
+    # Initial confidence at mission origin
+    if active_path:
+        init_conf = rover.compute_upcoming_confidence(
+            active_path=active_path,
+            current_idx=0,
+            fusion_grid=fusion_grid,
+            lookahead_distance_m=cfg.confidence_lookahead_m,
+            resolution_m=environment.resolution_m,
+            weight_observed_ground=cfg.weight_observed_ground,
+            weight_observed_aerial=cfg.weight_observed_aerial,
+            weight_inferred=cfg.weight_inferred,
+            weight_unobserved=cfg.weight_unobserved,
+            hazard_penalty_weight=cfg.confidence_hazard_weight
+        )
+        dec_label = "Drive Direct" if init_conf >= cfg.confidence_threshold else "Low Confidence"
+        rover.record_confidence_step(
+            step=0,
+            confidence=init_conf,
+            threshold=cfg.confidence_threshold,
+            decision=dec_label,
+            rationale=f"Origin terrain confidence: {init_conf:.2f} (gate: {cfg.confidence_threshold:.2f})"
+        )
 
     max_steps = environment.size * max_steps_mult
     step_count = 0
@@ -219,6 +245,28 @@ def simulate_rover_traversal(
             terrain_hazard=terrain.hazard_index
         )
 
+        # Record confidence after step
+        step_conf = rover.compute_upcoming_confidence(
+            active_path=active_path,
+            current_idx=curr_idx + 1,
+            fusion_grid=fusion_grid,
+            lookahead_distance_m=cfg.confidence_lookahead_m,
+            resolution_m=environment.resolution_m,
+            weight_observed_ground=cfg.weight_observed_ground,
+            weight_observed_aerial=cfg.weight_observed_aerial,
+            weight_inferred=cfg.weight_inferred,
+            weight_unobserved=cfg.weight_unobserved,
+            hazard_penalty_weight=cfg.confidence_hazard_weight
+        )
+        dec_label = "Drive Direct" if step_conf >= cfg.confidence_threshold else "Low Confidence"
+        rover.record_confidence_step(
+            step=step_count,
+            confidence=step_conf,
+            threshold=cfg.confidence_threshold,
+            decision=dec_label,
+            rationale=f"Step {step_count}: terrain confidence {step_conf:.2f} over next {cfg.confidence_lookahead_m:.1f}m"
+        )
+
         # Check collision lookahead on newly observed terrain
         if rover.check_path_collision(active_path, curr_idx + 1, fusion_grid):
             rover.replanning_events.append(rover.current_pos)
@@ -254,18 +302,7 @@ def plan_mission(
     planner = PathPlanner()
     cfg = cost_config or MissionCostConfig()
 
-    # --- 1. Evaluate Decision Engine ---
-    decision = decision_engine.evaluate_scout_tradeoff(
-        environment=environment,
-        terrain=terrain,
-        start=environment.start,
-        goal=environment.goal,
-        rover_battery_wh=rover_battery_wh,
-        drone_battery_wh=drone_battery_wh,
-        cost_config=cfg
-    )
-
-    # --- 2. Strategy 1: Rover-Only Baseline (Dynamic Replanning) ---
+    # --- 1. Strategy 1: Rover-Only Baseline (Dynamic Replanning) ---
     baseline_fusion = SensorFusionGrid(environment.size)
     baseline_rover = simulate_rover_traversal(
         environment=environment,
@@ -274,7 +311,8 @@ def plan_mission(
         planner=planner,
         rover_radius=rover_radius,
         rover_battery_wh=rover_battery_wh,
-        caution_penalty=caution_penalty
+        caution_penalty=caution_penalty,
+        cost_config=cfg
     )
     rover_only_telemetry = baseline_rover.get_mission_summary()
     rover_only_coverage = baseline_fusion.get_coverage_breakdown()
@@ -283,7 +321,7 @@ def plan_mission(
         rover_only_telemetry["total_energy_wh"], 0.0, rover_only_risk, cfg
     )
 
-    # --- 3. Strategy 2: Always-Scout (Unconditional Cooperative Reconnaissance) ---
+    # --- 2. Strategy 2: Always-Scout (Unconditional Cooperative Reconnaissance) ---
     always_fusion = SensorFusionGrid(environment.size)
     always_rover_init = RoverAgent(environment.start, rover_radius, rover_battery_wh)
     always_rover_init.scan_surroundings(environment, always_fusion, terrain.hazard_index)
@@ -305,7 +343,8 @@ def plan_mission(
         planner=planner,
         rover_radius=rover_radius,
         rover_battery_wh=rover_battery_wh,
-        caution_penalty=caution_penalty
+        caution_penalty=caution_penalty,
+        cost_config=cfg
     )
     always_telemetry = always_rover.get_mission_summary()
     always_coverage = always_fusion.get_coverage_breakdown()
@@ -315,10 +354,29 @@ def plan_mission(
         always_telemetry["total_energy_wh"], always_drone_wh, always_risk, cfg
     )
 
-    # --- 4. Strategy 3: Adaptive-Scout (Selective Information-Theoretic Reconnaissance) ---
+    # --- 3. Strategy 3: Adaptive-Scout (Selective Information-Theoretic Reconnaissance with Confidence Gating) ---
     adaptive_fusion = SensorFusionGrid(environment.size)
     adaptive_rover_init = RoverAgent(environment.start, rover_radius, rover_battery_wh)
     adaptive_rover_init.scan_surroundings(environment, adaptive_fusion, terrain.hazard_index)
+
+    # Initial provisional path to evaluate upcoming corridor confidence before movement
+    initial_path, _ = planner.plan(
+        adaptive_fusion, environment.elevation, environment.start, environment.goal, caution_penalty
+    )
+
+    # Evaluate Gated Decision Engine
+    decision = decision_engine.evaluate_scout_tradeoff(
+        environment=environment,
+        terrain=terrain,
+        start=environment.start,
+        goal=environment.goal,
+        rover_battery_wh=rover_battery_wh,
+        drone_battery_wh=drone_battery_wh,
+        cost_config=cfg,
+        fusion_grid=adaptive_fusion,
+        planned_path=initial_path,
+        current_idx=0
+    )
 
     adaptive_drone_telemetry = None
     if scout is not None:
@@ -349,7 +407,8 @@ def plan_mission(
         planner=planner,
         rover_radius=rover_radius,
         rover_battery_wh=rover_battery_wh,
-        caution_penalty=caution_penalty
+        caution_penalty=caution_penalty,
+        cost_config=cfg
     )
     adaptive_telemetry = adaptive_rover.get_mission_summary()
     adaptive_coverage = adaptive_fusion.get_coverage_breakdown()
@@ -410,12 +469,15 @@ def plan_mission(
         decision_assessment={
             "recommendation": decision.recommendation.value,
             "confidence_score": decision.confidence_score,
+            "terrain_confidence": decision.terrain_confidence_score,
+            "confidence_threshold": decision.confidence_threshold,
             "terrain_complexity": decision.terrain_complexity_score,
             "path_uncertainty": decision.path_uncertainty_score,
             "estimated_rover_saving_wh": decision.estimated_rover_saving_wh,
             "estimated_scout_cost_wh": decision.estimated_scout_cost_wh,
             "expected_net_benefit_wh": decision.expected_net_benefit_wh,
-            "rationale": decision.rational
+            "rationale": decision.rational,
+            "gating_bypassed": decision.gating_bypassed
         },
         coverage_stats=always_coverage,
         rover_only_replans=len(baseline_rover.replanning_events),
@@ -429,5 +491,6 @@ def plan_mission(
         mission_costs=mission_costs,
         route_risks=route_risks,
         cost_config=cfg,
-        strategy_results=strategy_results
+        strategy_results=strategy_results,
+        confidence_history=adaptive_rover.confidence_history
     )

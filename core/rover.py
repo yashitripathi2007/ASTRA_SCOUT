@@ -4,7 +4,7 @@ Models the planetary rover entity, its dynamic local sensor perception,
 step-by-step path traversal, obstacle encounter detection, and dynamic replanning triggers.
 """
 
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 from .energy_model import RoverEnergyModel
 from .sensor_fusion import SensorFusionGrid
@@ -31,9 +31,55 @@ class RoverAgent:
         self.traversed_path: List[Tuple[int, int]] = [start_pos]
         self.replanning_events: List[Tuple[int, int]] = []
         self.obstacles_discovered: List[Tuple[int, int]] = []
+        self.confidence_history: List[Dict[str, Any]] = []
         self.total_energy_wh: float = 0.0
         self.total_distance_m: float = 0.0
         self.total_time_s: float = 0.0
+
+    def compute_upcoming_confidence(
+        self,
+        active_path: List[Tuple[int, int]],
+        current_idx: int,
+        fusion_grid: SensorFusionGrid,
+        lookahead_distance_m: float = 15.0,
+        resolution_m: float = 1.0,
+        weight_observed_ground: float = 1.0,
+        weight_observed_aerial: float = 0.88,
+        weight_inferred: float = 0.40,
+        weight_unobserved: float = 0.00,
+        hazard_penalty_weight: float = 0.25
+    ) -> float:
+        """Computes rover terrain confidence along upcoming path cells within lookahead window."""
+        return fusion_grid.compute_path_confidence(
+            path=active_path,
+            current_idx=current_idx,
+            lookahead_distance_m=lookahead_distance_m,
+            resolution_m=resolution_m,
+            weight_observed_ground=weight_observed_ground,
+            weight_observed_aerial=weight_observed_aerial,
+            weight_inferred=weight_inferred,
+            weight_unobserved=weight_unobserved,
+            hazard_penalty_weight=hazard_penalty_weight
+        )
+
+    def record_confidence_step(
+        self,
+        step: int,
+        confidence: float,
+        threshold: float,
+        decision: str,
+        rationale: str = ""
+    ) -> None:
+        """Records telemetry entry of terrain confidence and decision at this traversal step."""
+        self.confidence_history.append({
+            "step": int(step),
+            "position": self.current_pos,
+            "distance_m": round(self.total_distance_m, 2),
+            "confidence": round(float(confidence), 3),
+            "threshold": round(float(threshold), 3),
+            "decision": decision,
+            "rationale": rationale
+        })
 
     def get_local_sensor_mask(self, pos: Tuple[int, int], grid_size: int) -> np.ndarray:
         """Returns circular boolean mask of ground sensors around specified position."""
@@ -129,4 +175,6 @@ class RoverAgent:
             "replanning_events_count": len(self.replanning_events),
             "replanning_locations": self.replanning_events,
             "battery_soc_pct": round(100.0 * (self.battery_wh_remaining / self.battery_capacity_wh), 1),
+            "confidence_history": self.confidence_history,
+            "mean_confidence": round(float(np.mean([entry["confidence"] for entry in self.confidence_history])), 3) if self.confidence_history else 1.0,
         }

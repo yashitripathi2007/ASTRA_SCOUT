@@ -7,7 +7,7 @@ to determine whether deploying the aerial scout drone pays off.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List, Any
 import numpy as np
 from .energy_model import DroneEnergyModel, RoverEnergyModel
 
@@ -20,12 +20,21 @@ class DecisionRecommendation(str, Enum):
 
 @dataclass
 class MissionCostConfig:
-    """Configurable weights and constraints for multi-objective mission cost."""
+    """Configurable weights and constraints for multi-objective mission cost and terrain confidence gating."""
     weight_rover_energy: float = 1.0     # Multiplier for rover surface energy (Wh)
     weight_drone_energy: float = 1.0     # Multiplier for drone flight overhead (Wh)
     weight_route_risk: float = 15.0      # Multiplier for cumulative route hazard exposure
     drone_reserve_margin: float = 0.20   # Required safety reserve buffer for drone battery (20%)
     critical_rover_battery_pct: float = 25.0  # Low rover battery threshold
+    # Terrain confidence gating parameters
+    confidence_threshold: float = 0.60   # Gate threshold: confidence < threshold triggers scout evaluation
+    confidence_lookahead_m: float = 15.0 # Lookahead corridor length along upcoming path (meters)
+    confidence_hysteresis: float = 0.05  # Hysteresis buffer to prevent decision flip-flopping [threshold +- margin]
+    weight_observed_ground: float = 1.0  # Knowledge weight for direct rover ground contact
+    weight_observed_aerial: float = 0.88 # Knowledge weight for aerial drone survey
+    weight_inferred: float = 0.40        # Knowledge weight for AI spatial prior
+    weight_unobserved: float = 0.00      # Knowledge weight for unobserved terrain
+    confidence_hazard_weight: float = 0.25  # Attenuation factor reducing confidence for high terrain hazard
 
 
 def compute_mission_cost(
@@ -50,13 +59,16 @@ def compute_mission_cost(
 @dataclass
 class DecisionAssessment:
     recommendation: DecisionRecommendation
-    confidence_score: float              # 0.0 to 1.0
+    confidence_score: float              # 0.0 to 1.0 (computed terrain confidence score)
     terrain_complexity_score: float      # 0.0 to 1.0 (roughness + slope variance + obstacle density)
     path_uncertainty_score: float        # Shannon entropy / ignorance proxy in mission sector [0, 1]
     estimated_rover_saving_wh: float     # Estimated rover energy saved by avoiding detours
     estimated_scout_cost_wh: float       # Drone flight energy required
     expected_net_benefit_wh: float       # Net energy benefit (+ = savings, - = overhead)
     rational: str                        # Human-interpretable rationale for the crew
+    terrain_confidence_score: float = 0.0 # Real computed terrain confidence score along upcoming path
+    confidence_threshold: float = 0.60   # Configured gate threshold
+    gating_bypassed: bool = False        # True if scouting was skipped due to high terrain confidence
 
     @property
     def rationale(self) -> str:
@@ -76,6 +88,25 @@ class AdaptiveDecisionEngine:
         self.drone_model = drone_model or DroneEnergyModel()
         self.cost_config = cost_config or MissionCostConfig()
 
+    @staticmethod
+    def _generate_provisional_corridor(
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        grid_size: int,
+        steps: int = 25
+    ) -> List[Tuple[int, int]]:
+        """Generates direct linear waypoint corridor from start to goal."""
+        sy, sx = start
+        gy, gx = goal
+        corridor = []
+        for i in range(steps + 1):
+            t = i / steps
+            py = int(np.clip(round(sy + t * (gy - sy)), 0, grid_size - 1))
+            px = int(np.clip(round(sx + t * (gx - sx)), 0, grid_size - 1))
+            if not corridor or corridor[-1] != (py, px):
+                corridor.append((py, px))
+        return corridor
+
     def evaluate_scout_tradeoff(
         self,
         environment,
@@ -84,11 +115,25 @@ class AdaptiveDecisionEngine:
         goal: Tuple[int, int],
         rover_battery_wh: float = 120.0,
         drone_battery_wh: float = 40.0,
-        cost_config: Optional[MissionCostConfig] = None
+        cost_config: Optional[MissionCostConfig] = None,
+        fusion_grid: Optional[Any] = None,
+        planned_path: Optional[List[Tuple[int, int]]] = None,
+        current_idx: int = 0,
+        is_scouting_active: bool = False,
+        override_confidence: Optional[float] = None
     ) -> DecisionAssessment:
         """
-        Analyzes terrain corridor, obstacle cluster density, slope variance, and battery levels
+        Analyzes terrain confidence, obstacle cluster density, slope variance, and battery levels
         to recommend whether aerial scouting should be launched.
+
+        GATE LOGIC:
+        1. If terrain_confidence >= effective_threshold (with hysteresis):
+           Skip scouting immediately! Rover drives direct to conserve drone flight energy.
+        2. If terrain_confidence < effective_threshold:
+           Evaluate expected-benefit trade-off and drone battery sufficiency:
+           - If drone battery < required flight energy + reserve: mandate direct drive.
+           - Else if expected net benefit or complexity is high: recommend aerial survey.
+           - Else: drive direct.
         """
         cfg = cost_config or self.cost_config
         sy, sx = start
@@ -120,61 +165,119 @@ class AdaptiveDecisionEngine:
         # Path uncertainty proxy strictly bounded in [0.0, 1.0]
         path_uncertainty = float(np.clip(0.50 + 0.50 * complexity, 0.0, 1.0))
 
-        # 2. Drone cost estimation for corridor flight
+        # 2. Compute Terrain Confidence along upcoming path
+        if override_confidence is not None:
+            terrain_conf = float(np.clip(override_confidence, 0.0, 1.0))
+        elif fusion_grid is not None and planned_path is not None:
+            terrain_conf = fusion_grid.compute_path_confidence(
+                path=planned_path,
+                current_idx=current_idx,
+                lookahead_distance_m=cfg.confidence_lookahead_m,
+                resolution_m=environment.resolution_m,
+                weight_observed_ground=cfg.weight_observed_ground,
+                weight_observed_aerial=cfg.weight_observed_aerial,
+                weight_inferred=cfg.weight_inferred,
+                weight_unobserved=cfg.weight_unobserved,
+                hazard_penalty_weight=cfg.confidence_hazard_weight
+            )
+        elif fusion_grid is not None:
+            corridor = self._generate_provisional_corridor(start, goal, environment.size)
+            terrain_conf = fusion_grid.compute_path_confidence(
+                path=corridor,
+                current_idx=0,
+                lookahead_distance_m=cfg.confidence_lookahead_m,
+                resolution_m=environment.resolution_m,
+                weight_observed_ground=cfg.weight_observed_ground,
+                weight_observed_aerial=cfg.weight_observed_aerial,
+                weight_inferred=cfg.weight_inferred,
+                weight_unobserved=cfg.weight_unobserved,
+                hazard_penalty_weight=cfg.confidence_hazard_weight
+            )
+        else:
+            # When unobserved and no fusion grid provided, default confidence reflects unobserved corridor
+            terrain_conf = 0.0
+
+        # Apply Schmitt-trigger hysteresis to prevent decision flip-flopping
+        # If scouting is active/requested, threshold moves up by hysteresis margin to clear
+        # If driving normally, threshold moves down by hysteresis margin to trigger
+        if is_scouting_active:
+            effective_threshold = min(1.0, cfg.confidence_threshold + cfg.confidence_hysteresis)
+        else:
+            effective_threshold = max(0.0, cfg.confidence_threshold - cfg.confidence_hysteresis)
+
+        # 3. Drone cost estimation for corridor flight
         scout_telemetry = self.drone_model.flight_energy(dist_direct * 1.15)
         scout_cost_wh = float(scout_telemetry["flight_energy_wh"])
 
-        # 3. Expected rover blind traversal detour penalty
+        # 4. Expected rover blind traversal detour penalty
         expected_blind_detour_ratio = 1.0 + 1.6 * (complexity ** 1.5)
         nominal_rover_wh = dist_direct * 0.18
         rover_saving_wh = float(nominal_rover_wh * (expected_blind_detour_ratio - 1.0))
-
         net_benefit_wh = float(rover_saving_wh - scout_cost_wh)
 
-        # 4. Formulate Recommendation factoring in battery capacity and safety margins
         drone_energy_required = scout_cost_wh * (1.0 + cfg.drone_reserve_margin)
 
-        if drone_battery_wh < drone_energy_required:
-            # Insufficient drone battery to complete flight safely
+        # 5. GATED DECISION LOGIC
+        # GATE 1: High Confidence Check (terrain is well-known -> skip scouting)
+        if terrain_conf >= effective_threshold:
             rec = DecisionRecommendation.DRIVE_DIRECT
-            conf = 0.99
+            gating_bypassed = True
             rationale = (
-                f"Drone battery critically low ({drone_battery_wh:.1f} Wh available vs {drone_energy_required:.1f} Wh required "
-                f"including {int(cfg.drone_reserve_margin*100)}% reserve). Direct driving mandated to prevent drone stranding. "
-                f"Corridor uncertainty: {path_uncertainty:.2f}, expected net benefit: {net_benefit_wh:+.2f} Wh, scout cost: {scout_cost_wh:.1f} Wh."
+                f"High terrain confidence ({terrain_conf:.2f} >= threshold {cfg.confidence_threshold:.2f}, "
+                f"hysteresis margin: {cfg.confidence_hysteresis:.2f}). Ground ahead is sufficiently known; "
+                f"skipping aerial reconnaissance to conserve {scout_cost_wh:.1f} Wh drone flight energy "
+                f"(expected net benefit: {net_benefit_wh:+.2f} Wh). Path uncertainty: {path_uncertainty:.2f}. "
+                f"Direct rover driving is optimal."
+            )
+        # GATE 2: Low Confidence -> Evaluate existing scout-or-drive tradeoff & battery feasibility
+        elif drone_battery_wh < drone_energy_required:
+            rec = DecisionRecommendation.DRIVE_DIRECT
+            gating_bypassed = False
+            rationale = (
+                f"Low terrain confidence ({terrain_conf:.2f} < threshold {cfg.confidence_threshold:.2f}) "
+                f"indicates uncertain terrain ahead, but Drone battery is critically low ({drone_battery_wh:.1f} Wh "
+                f"available vs {drone_energy_required:.1f} Wh required including {int(cfg.drone_reserve_margin*100)}% reserve). "
+                f"Direct driving mandated to prevent drone stranding. Path uncertainty: {path_uncertainty:.2f}, "
+                f"expected net benefit: {net_benefit_wh:+.2f} Wh, scout cost: {scout_cost_wh:.1f} Wh."
             )
         elif complexity > 0.45 or net_benefit_wh > 1.5:
             rec = DecisionRecommendation.SCOUT_RECOMMENDED
-            conf = min(0.98, 0.65 + 0.35 * complexity)
+            gating_bypassed = False
             rationale = (
-                f"High terrain complexity ({complexity:.2f}) and obstacle density ({obstacle_ratio*100:.1f}%) "
-                f"with path uncertainty {path_uncertainty:.2f}. Aerial scouting requires {scout_cost_wh:.1f} Wh flight energy "
+                f"Low terrain confidence ({terrain_conf:.2f} < threshold {cfg.confidence_threshold:.2f}) "
+                f"with high terrain complexity ({complexity:.2f}), obstacle density ({obstacle_ratio*100:.1f}%), "
+                f"and path uncertainty {path_uncertainty:.2f}. Aerial scouting requires {scout_cost_wh:.1f} Wh flight energy "
                 f"and yields an expected net benefit of {net_benefit_wh:+.2f} Wh by avoiding severe rover backtracking."
             )
         elif complexity > 0.25:
             rec = DecisionRecommendation.TARGETED_SCOUT
-            conf = 0.75
+            gating_bypassed = False
             rationale = (
-                f"Moderate terrain complexity ({complexity:.2f}) with path uncertainty {path_uncertainty:.2f}. "
+                f"Low terrain confidence ({terrain_conf:.2f} < threshold {cfg.confidence_threshold:.2f}) "
+                f"with moderate terrain complexity ({complexity:.2f}) and path uncertainty {path_uncertainty:.2f}. "
                 f"Targeted chokepoint inspection requires {scout_cost_wh:.1f} Wh flight energy "
                 f"and yields an expected net benefit of {net_benefit_wh:+.2f} Wh."
             )
         else:
             rec = DecisionRecommendation.DRIVE_DIRECT
-            conf = min(0.95, 0.70 + 0.30 * (1.0 - complexity))
+            gating_bypassed = False
             rationale = (
-                f"Low terrain complexity ({complexity:.2f}) and minimal obstacles with path uncertainty {path_uncertainty:.2f}. "
+                f"Low terrain confidence ({terrain_conf:.2f} < threshold {cfg.confidence_threshold:.2f}), "
+                f"but terrain complexity ({complexity:.2f}) and obstacles are minimal with path uncertainty {path_uncertainty:.2f}. "
                 f"Direct rover driving is optimal; deploying drone would incur {scout_cost_wh:.1f} Wh flight overhead "
                 f"with expected net benefit of {net_benefit_wh:+.2f} Wh."
             )
 
         return DecisionAssessment(
             recommendation=rec,
-            confidence_score=round(conf, 2),
+            confidence_score=round(terrain_conf, 2),
             terrain_complexity_score=round(complexity, 2),
             path_uncertainty_score=round(path_uncertainty, 2),
             estimated_rover_saving_wh=round(rover_saving_wh, 2),
             estimated_scout_cost_wh=round(scout_cost_wh, 2),
             expected_net_benefit_wh=round(net_benefit_wh, 2),
-            rational=rationale
+            rational=rationale,
+            terrain_confidence_score=round(terrain_conf, 2),
+            confidence_threshold=round(cfg.confidence_threshold, 2),
+            gating_bypassed=gating_bypassed
         )
